@@ -1,0 +1,14 @@
+server:
+  bind:
+    host: 10.4.0.7
+    port: 12345
+catnip:
+  my_ipv4_addr: 10.4.0.7
+  my_link_addr: "00:0d:3a:55:ed:c4"
+  my_interface_name: "eth1"
+  arp_disable: false
+#arp_table:
+#  "00:22:48:2d:ad:20": 10.1.0.5
+#  "00:22:48:25:6d:6c": 10.1.0.7
+dpdk:
+     eal_init: ["--proc-type=auto", "--vdev=net_vdev_netvsc0,iface=eth1"]

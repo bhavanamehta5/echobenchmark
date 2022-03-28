@@ -1,0 +1,27 @@
+
+cargo-features = ["edition2021"]
+[package]
+name = "benchmark"
+version = "0.1.0"
+edition = "2021"
+readme = "README.md"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rand = "0.3.15"
+libc = "0.2.115"
+yaml-rust = "0.4"
+# you specify the feature that you want on for demikernel, see features in demikernel/demikernel/tree/master/src/Cargo.toml
+#demikernel = { git = "https://github.com/demikernel/demikernel", branch = "dev", features = ["catnip-libos", "mlx4"]}
+#catnip = { git = "https://github.com/demikernel/catnip", branch = "dev", features = ["threadunsafe"] }
+
+catnip = { git = "https://github.com/demikernel/catnip", rev = "a4c7f76bacbe6015bccdad3ffafeeae10d0f9094", features = ["threadunsafe"] }
+catwalk = { git = "https://github.com/demikernel/catwalk", rev = "063cf220c3e81beb6562f798ebadab3d9c24f336" }
+demikernel = { git = "https://github.com/demikernel/demikernel", rev = "5f8cb9cf4ff35eff96345de20a88fec1ce53bfdc", features = ["catnip-libos", "mlx4"] }
+perftools = { git = "https://github.com/demikernel/perftools", rev = "02f07ad28218c182bbf82e5f8eaf22f7de3f34c6", optional = true }
+runtime = { git = "https://github.com/demikernel/runtime", rev = "8f7c48f568d983a91d85516bd39f0a1d49486597" }
+
+anyhow = "1.0.32"
+nix = "0.23.1"
+
