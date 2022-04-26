@@ -5,6 +5,9 @@ use demikernel::catnip::{dpdk::initialize_dpdk, memory::DPDKBuf, runtime::DPDKRu
 use anyhow::{Error, Result};
 use clap::Parser;
 
+//Parsing mode, server IPv4 address, server port and client IPv4 address
+//via command line using clap 
+
 /// Echo Benchmark
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -45,7 +48,9 @@ fn main() -> Result<(), Error>
     let serverport: Port = Port::try_from(serverport_number).unwrap();
     let localaddress = Ipv4Endpoint::new(server_address, serverport);
 
-    match mode.as_ref()
+    //calling .deref() so that String gets automagically turned into &str 
+    //for comparisons with literals.
+    match mode.as_deref()
     {
         "server" =>{
             server(localaddress, initialize_dpdk_fn(server_address), loops); 
@@ -62,7 +67,6 @@ fn main() -> Result<(), Error>
 }
 
 
-//get the server address from commandline argument
 fn server(localaddress: Ipv4Endpoint,mut libos:LibOS<DPDKRuntime>, loops: u8)
 {
     let socket_fd = libos.socket(libc::AF_INET, libc::SOCK_STREAM, 0).unwrap();
@@ -170,7 +174,7 @@ fn client(localaddress: Ipv4Endpoint, mut libos:LibOS<DPDKRuntime>, loops: u8)
     }
 }
 
-//setting up DPDK Runtime
+//initializing DPDK Runtime, libos construction
 fn initialize_dpdk_fn(address:Ipv4Addr) -> LibOS<DPDKRuntime>
 {
     //arguments required for DPDK runtime
@@ -200,7 +204,7 @@ libos
 
 }
 
-//change this to accomodate any packet size not just 64 bits 
+//accomodates packet of any size 
 fn makepkt(libos: &LibOS<DPDKRuntime>,reply_size: usize, i: usize) -> DPDKBuf {
 
     let mut pktbuf = libos.rt().alloc_body_mbuf();
@@ -215,25 +219,3 @@ fn makepkt(libos: &LibOS<DPDKRuntime>,reply_size: usize, i: usize) -> DPDKBuf {
 
     DPDKBuf::Managed(pktbuf)
 }
-
-
-// fn handle_connection(mut stream: TcpStream) {
-
-//     let (status_line, filename) = if buffer.starts_with(get) {
-//         ("HTTP/1.1 200 OK", "hello.html")
-//     } else {
-//         ("HTTP/1.1 404 NOT FOUND", "404.html")
-//     };
-
-//     let contents = fs::read_to_string(filename).unwrap();
-
-//     let response = format!(
-//         "{}\r\nContent-Length: {}\r\n\r\n{}",
-//         status_line,
-//         contents.len(),
-//         contents
-//     );
-
-//     stream.write(response.as_bytes()).unwrap();
-//     stream.flush().unwrap();
-// }
