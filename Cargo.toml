@@ -24,4 +24,5 @@ runtime = { git = "https://github.com/demikernel/runtime", rev = "8f7c48f568d983
 
 anyhow = "1.0.32"
 nix = "0.23.1"
+clap = { version = "3.1.12", features = ["derive"] }
 

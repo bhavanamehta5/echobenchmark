@@ -1,201 +1,184 @@
 //echo benchmark for performance testing
-use std::{collections::HashMap, env, ffi::CString, net::Ipv4Addr};
+use std::{collections::HashMap, ffi::CString, net::Ipv4Addr};
 use catnip::{libos::LibOS, operations::OperationResult, protocols::ip::Port, protocols::ipv4::Ipv4Endpoint};
 use demikernel::catnip::{dpdk::initialize_dpdk, memory::DPDKBuf, runtime::DPDKRuntime};
+use anyhow::{Error, Result};
+use clap::Parser;
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    let mode: &str = &args[1];
+//Parsing mode, server IPv4 address, server port and client IPv4 address
+//via command line using clap 
+
+/// Echo Benchmark
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct Args {
+    /// Mode you want to run this machine on - client or server
+    #[clap(short, long)]
+    mode: String,
+
+    /// server address
+    #[clap(long, default_value_t = Ipv4Addr::new(10, 4, 0, 7))]
+    server_address: Ipv4Addr,
+
+    /// server port
+    #[clap(long, default_value_t = 12345)]
+    port: u16,
+    
+    /// client address
+    #[clap(short, long, default_value_t = Ipv4Addr::new(10, 4, 0, 5))]
+    client_address: Ipv4Addr,
+}
+
+fn main() -> Result<(), Error>  
+{
+    let args = Args::parse();
+    let serverport_number = args.port;
+    let mode = args.mode;
+    let server_address = args.server_address;
+    let serverport_number = args.port;
+    let client_address = args.client_address;
+
+    let serverport: Port = Port::try_from(serverport_number).unwrap();
+    let localaddress = Ipv4Endpoint::new(server_address, serverport);
+
+    //calling .deref() so that String gets automagically turned into &str 
+    //for comparisons with literals.
+    match mode.as_deref()
+    {
+        //initialize_dpdk_fn gives you Libos with DPDK Runtime
+        "server" =>{
+            server(localaddress, initialize_dpdk_fn(server_address)); 
+        }
+
+        "client" => {
+            client(localaddress, initialize_dpdk_fn(client_address));
+        }
+
+        _ => {
+            panic!("please select a mode: client or server")
+        }
+    }
+
+    Ok(())
+}
+
+
+fn server(localaddress: Ipv4Endpoint,mut libos:LibOS<DPDKRuntime>)
+{
     let mut start = std::time::Instant::now();
     let mut end = std::time::Instant::now();
     let mut timeloggingdiff = std::time::Duration::new(0, 0);
     let mut nbytes: usize = 0;
 
-    match mode {
-        "server" => {
+    let socket_fd = libos.socket(libc::AF_INET, libc::SOCK_STREAM, 0).unwrap();
+    libos.bind(socket_fd, localaddress).unwrap();
+    libos.listen(socket_fd, 1024).unwrap();
 
-            //get the server address from commandline argument
-            let server_address = if args.len() > 2 {
-                match args[2].parse() {
-                    Ok(ip) => {
-                        println!("Using user-provided local address: {:?}", ip);
-                        ip
-                    },
-                    Err(_) => panic!("Cannot parse IP address given as command-line argument.")
-                }
-            } else {
-                Ipv4Addr::new(10, 4, 0, 7)
-            };
+    //Instead of sockets with read and write we use
+    //Queues with push and pop - queue
+    let mut queue: Vec<u64> = Vec::with_capacity(1_0000);
+    //first queue token in the vector queue
+    let qt_accept = libos.accept(socket_fd).unwrap();
+    queue.push(qt_accept);
 
-            //get port number from commandline argument
-            let serverport_number = if args.len() > 3 {
-                match args[3].parse() {
-                    Ok(port) => {
-                        println!("Using user-provided local address: {:?}", port);
-                        port
-                    },
-                    Err(_) => panic!("Cannot parse IP address given as command-line argument.")
-                }
-            } else {
-                12345
-            };
+    //wait on all the qtokens generates
+    //note: wait_any2 goes through all pushes first and then 
+    //goes and checks for pop qtokens. Push is always high priotity
+    loop {
+        //all the operations are asynchronous by default
+        let (i, fd, result) = libos.wait_any2(&queue);
+        //Native zero copy
+        queue.swap_remove(i);
 
-            let serverport: Port = Port::try_from(serverport_number).unwrap();
-            let localaddress = Ipv4Endpoint::new(server_address, serverport);
+        //result is the operation of the qtoken that just finished executing 
+        match result {
+            OperationResult::Accept(fd) => {
+                let q = libos.pop(fd).unwrap();
+                queue.push(q);
+            }
 
-            //number of times client send data to the server
-            let loops = if args.len() > 4 {
-                match args[4].parse() {
-                    Ok(x) => {
-                        println!("Looping {:?} number of times", x);
-                        x
-                    },
-                    Err(_) => panic!("Cannot parse number of loop as command-line argument.")
-                }
-            } else {
-                20
-            };
-    
-            println!("Mode = {}", mode);
-            println!("at IP address: {}", server_address);
-        
-            let strings = vec!["--proc-type=auto", "--vdev=net_vdev_netvsc0,iface=eth1"];
-            let vector_cstring: Vec<CString> = strings
-                .into_iter()
-                .map(|s| CString::new(s).expect("Error creating CString"))
-                .collect();
-        
-            let rt: DPDKRuntime = initialize_dpdk(
-                server_address,
-                &vector_cstring,
-                HashMap::new(),
-                false,
-                false,
-                1500,
-                536,
-                false,
-                false,
-            )
-            .unwrap();
-            let mut libos = LibOS::new(rt).unwrap();
+            OperationResult::Pop(_, buf) => {
+                
+                //echo this back
+                start = std::time::Instant::now();
+                nbytes += buf.len();
+                let buf2 = buf.clone();
+                let q = libos.push2(fd, buf2).unwrap();
+                queue.push(q);
+            }
 
-            println!("THIS IS THE SERVER");
-
-            let socket_fd = libos.socket(libc::AF_INET, libc::SOCK_STREAM, 0).unwrap();
-            libos.bind(socket_fd, localaddress).unwrap();
-            libos.listen(socket_fd, 1024).unwrap();
-
-            //Instead of sockets with read and write we use
-            //Queues with push and pop - queue
-            let mut queue: Vec<u64> = Vec::with_capacity(1_000);
-
-            let qt_accept = libos.accept(socket_fd).unwrap();
-            queue.push(qt_accept);
-
-            for _ in 0..loops {
-                //all the operations are asynchronous by default
-                //wait returns a qtoken and blocks on completion
-                let (i, fd, result) = libos.wait_any2(&queue);
-                //Native zero copy
-                queue.swap_remove(i);
-
-                //result is the operation of the qtoken that just finished executing 
-            
-                match result {
-                    OperationResult::Accept(fd) => {
-                        println!("Connection accepted at server side");
-
-                        start = std::time::Instant::now();
-                        let q = libos.pop(fd).unwrap();
-                        queue.push(q);
-                    }
-
-                    OperationResult::Pop(_, buf) => {
-                        //echo this back
-
-                        start = std::time::Instant::now();
-                        nbytes += buf.len();
-                        let buf2 = buf.clone();
-                        let q = libos.push2(fd, buf2).unwrap();
-                        queue.push(q);
-                    }
-
-                    OperationResult::Push => {
-
-                        end = std::time::Instant::now();
-                        timeloggingdiff = end-start;
-                        println!("time difference: {:?}", timeloggingdiff);
-                        let q = libos.pop(fd).unwrap();
-                        queue.push(q);
-                    }
-                    _ => {
-                        panic!("wrong oper found: {:?}", i);
-                    }
-                }
+            OperationResult::Push => {
+                end = std::time::Instant::now();
+                timeloggingdiff = end-start;
+                println!("time difference: {:?}", timeloggingdiff);
+                let q = libos.pop(fd).unwrap();
+                queue.push(q);
+            }
+            _ => {
+                panic!("wrong oper found: {:?}", i);
             }
         }
+    }
+}
 
-        "client" => {
+fn client(localaddress: Ipv4Endpoint, mut libos:LibOS<DPDKRuntime>)
+{
+    let socket_fd = libos.socket(libc::AF_INET, libc::SOCK_STREAM, 0).unwrap();
+    let mut queue: Vec<u64> = Vec::with_capacity(1_0000);
+    let mut q = libos.connect(socket_fd, localaddress).unwrap();
+    queue.push(q);
 
-    //get the client address from commandline argument
-    let client_address = if args.len() > 2 {
-        match args[2].parse() {
-            Ok(ip) => {
-                println!("Using user-provided local address: {:?}", ip);
-                ip
-            },
-            Err(_) => panic!("Cannot parse IP address given as command-line argument.")
+    let mut start = std::time::Instant::now();
+    let mut end = std::time::Instant::now();
+    let mut timeloggingdiff = std::time::Duration::new(0, 0);
+
+
+    loop
+    {
+        let (i, fd, result) = libos.wait_any2(&queue);
+        queue.swap_remove(i);
+
+        //push, pop are ansyc - return a qtoken q for 
+        //blocking on I/O completion 
+        match result {
+            OperationResult::Connect => {
+                q = libos.push2(fd, makepkt(&libos, 8,1)).unwrap();
+                queue.push(q);
+            }
+
+            //Open loop main logic:
+            //This enables no waiting for pop, multiple pushes can happen without waiting for pop to finish
+            //after every pop there is a push
+            //there is a pop for every push so whatever data is pushed will have a way to come back and be popped out
+            //wait on pushes is very less since they happen instantaneously
+            //wait always goes to pop once it checks for all push qtokens in the queue
+            OperationResult::Push => {
+                start = std::time::Instant::now();
+
+                let q2 = libos.pop(fd).unwrap();
+                queue.push(q2);
+
+                let q3 = libos.push2(fd, makepkt(&libos, 8,1)).unwrap();
+                queue.push(q3);
+            }
+
+            //since we already have a pop for every push we leave this empty
+            OperationResult::Pop(_, _) => {
+                end = std::time::Instant::now();
+                timeloggingdiff = end-start;
+                println!("time difference: {:?}", timeloggingdiff);
+
+            }
+            _ => {
+                panic!("wrong oper found: {:?}", result);
+            }
         }
-    } else {
-        Ipv4Addr::new(10, 4, 0, 5)
-    };
+    }
+}
 
-    //get the server address from commandline argument
-    let server_address = if args.len() > 2 {
-        match args[3].parse() {
-            Ok(ip) => {
-                println!("Using user-provided local address: {:?}", ip);
-                ip
-            },
-            Err(_) => panic!("Cannot parse IP address given as command-line argument.")
-        }
-    } else {
-        Ipv4Addr::new(10, 4, 0, 7)
-    };
-    //get port number from commandline argument
-    let serverport_number = if args.len() > 3 {
-        match args[4].parse() {
-            Ok(port) => {
-                println!("Using user-provided local address: {:?}", port);
-                port
-            },
-            Err(_) => panic!("Cannot parse IP address given as command-line argument.")
-        }
-    } else {
-         12345
-    };
-
-    let serverport: Port = Port::try_from(serverport_number).unwrap();
-    let localaddress = Ipv4Endpoint::new(server_address, serverport);
-  
-    //number of times client sends data to the server
-    let loops = if args.len() > 4 {
-        match args[5].parse() {
-            Ok(x) => {
-                println!("Looping {:?} number of times", x);
-                x
-            },
-            Err(_) => panic!("Cannot parse number of loop as command-line argument.")
-        }
-    } else {
-         20
-    };
-
-    println!("Mode = {}", mode);
-    println!("at IP address: {}", client_address);
-
-    //setting up DPDK Runtime
-
+//initializing DPDK Runtime, libos construction
+fn initialize_dpdk_fn(address:Ipv4Addr) -> LibOS<DPDKRuntime>
+{
     //arguments required for DPDK runtime
     let strings = vec!["--proc-type=auto", "--vdev=net_vdev_netvsc0,iface=eth1"];
     let vector_cstring: Vec<CString> = strings
@@ -205,7 +188,7 @@ fn main() {
 
     //need rt for LibOS struct
     let rt: DPDKRuntime = initialize_dpdk(
-        client_address,
+        address,
         &vector_cstring,
         HashMap::new(),
         false,
@@ -215,72 +198,16 @@ fn main() {
         false,
         false,
     )
-    .unwrap();
+.unwrap();
 
-    //calling LibOS constructor
-    let mut libos = LibOS::new(rt).unwrap();
+let libos = LibOS::new(rt).unwrap();
 
- 
-            /*----------------------------------------------------------
-            ||                        CLIENT                          ||
-            ----------------------------------------------------------*/
-            let socket_fd = libos.socket(libc::AF_INET, libc::SOCK_STREAM, 0).unwrap();
-            //let mut queue: Vec<u64> = Vec::with_capacity(1_000);
-            let mut q = libos.connect(socket_fd, localaddress).unwrap();
-            //queue.push(qt_connect);
+libos
 
-            let mut x = 123;
-            for _ in 0..20 {
-                //wait blockson I/O operations and returns the result 
-                let (fd, result) = libos.wait2(q);
-                //queue.swap_remove(0);
-
-                //push, pop are ansyc - return a qtoken q for 
-                //blocking on I/O completion 
-                match result {
-                    OperationResult::Connect => {
-                        println!("connectedSDEOJFOIWEJFIEWJF");
-
-                        start = std::time::Instant::now();
-                        q = libos.push2(fd, makepkt(&libos, 8,123)).unwrap();
-                        //queue.push(q);
-                    }
-
-                    OperationResult::Push => {
-                        start = std::time::Instant::now();
-                        println!("push");
-
-                        q = libos.pop(fd).unwrap();
-                        //queue.push(q);
-                        x=x+1;
-                    }
-                    OperationResult::Pop(_, _) => {
-
-                        end = std::time::Instant::now();
-                        println!("pop");
-
-                        timeloggingdiff = end-start;
-                        
-                        println!("time difference: {:?}", timeloggingdiff);
-                        q = libos.push2(fd, makepkt(&libos,8, x)).unwrap();
-                        println!("{:}", x);
-                    }
-                    _ => {
-                        panic!("wrong oper found: {:?}", result);
-                    }
-                }
-            }
-        }
-        _ => {
-            panic!("please select a mode: client or server")
-        }
-    }
 }
 
-
-
-//change this to accomodate any packet size not just 64 bits 
-fn makepkt(libos: &LibOS<DPDKRuntime>,reply_size: usize, i: u64) -> DPDKBuf {
+//accomodates packet of any size 
+fn makepkt(libos: &LibOS<DPDKRuntime>,reply_size: usize, i: usize) -> DPDKBuf {
 
     let mut pktbuf = libos.rt().alloc_body_mbuf();
     // Factory packet.
@@ -294,4 +221,3 @@ fn makepkt(libos: &LibOS<DPDKRuntime>,reply_size: usize, i: u64) -> DPDKBuf {
 
     DPDKBuf::Managed(pktbuf)
 }
-
